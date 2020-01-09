@@ -408,30 +408,17 @@ struct sock {
 	 * Because of non atomicity rules, all
 	 * changes are protected by socket lock.
 	 */
-	unsigned int		__sk_flags_offset[0];
-#ifdef __BIG_ENDIAN_BITFIELD
-#define SK_FL_PROTO_SHIFT  16
-#define SK_FL_PROTO_MASK   0x00ff0000
-
-#define SK_FL_TYPE_SHIFT   0
-#define SK_FL_TYPE_MASK    0x0000ffff
-#else
-#define SK_FL_PROTO_SHIFT  8
-#define SK_FL_PROTO_MASK   0x0000ff00
-
-#define SK_FL_TYPE_SHIFT   16
-#define SK_FL_TYPE_MASK    0xffff0000
-#endif
-
 	kmemcheck_bitfield_begin(flags);
-	unsigned int		sk_padding : 2,
+	u8			sk_padding : 2,
 				sk_no_check_tx : 1,
 				sk_no_check_rx : 1,
-				sk_userlocks : 4,
-				sk_protocol  : 8,
-				sk_type      : 16;
-#define SK_PROTOCOL_MAX U8_MAX
+				sk_userlocks : 4;
 	kmemcheck_bitfield_end(flags);
+	/* Whole fields since "sock: Make sk_protocol a 16-bit value" (5.6), so BPF
+	 * context accesses can load them directly. */
+	u16			sk_type;
+	u16			sk_protocol;
+#define SK_PROTOCOL_MAX U16_MAX
 
 	int			sk_wmem_queued;
 	gfp_t			sk_allocation;
