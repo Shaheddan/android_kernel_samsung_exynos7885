@@ -469,6 +469,20 @@ static inline void *kvzalloc(size_t size, gfp_t flags)
 	return kvmalloc(size, flags | __GFP_ZERO);
 }
 
+/* Backport of upstream 4.12 kvmalloc_array() and 4.18 kvcalloc() */
+static inline void *kvmalloc_array(size_t n, size_t size, gfp_t flags)
+{
+	if (size != 0 && n > SIZE_MAX / size)
+		return NULL;
+
+	return kvmalloc(n * size, flags);
+}
+
+static inline void *kvcalloc(size_t n, size_t size, gfp_t flags)
+{
+	return kvmalloc_array(n, size, flags | __GFP_ZERO);
+}
+
 extern void kvfree(const void *addr);
 
 static inline void compound_lock(struct page *page)
