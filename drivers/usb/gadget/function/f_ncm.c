@@ -1456,6 +1456,9 @@ ncm_bind(struct usb_configuration *c, struct usb_function *f)
 		goto netdev_cleanup;
 	}
 
+	/* CIP: point the MAC string at the instance being bound now. */
+	ncm_string_defs[STRING_MAC_IDX].s = ncm->ethaddr;
+
 	us = usb_gstrings_attach(cdev, ncm_strings,
 				 ARRAY_SIZE(ncm_string_defs));
 	if (IS_ERR(us))
@@ -1860,7 +1863,6 @@ static struct usb_function *ncm_alloc(struct usb_function_instance *fi)
 	mutex_lock(&opts->lock);
 	opts->refcnt++;
 
-	ncm_string_defs[STRING_MAC_IDX].s = ncm->ethaddr;
 
 	spin_lock_init(&ncm->lock);
 	ncm_reset_values(ncm);
