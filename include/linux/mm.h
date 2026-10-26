@@ -185,6 +185,7 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_HUGETLB	0x00400000	/* Huge TLB Page VM */
 #define VM_ARCH_1	0x01000000	/* Architecture-specific flag */
 #define VM_ARCH_2	0x02000000
+#define VM_WIPEONFORK	0x02000000	/* Wipe VMA contents in child. */
 #define VM_DONTDUMP	0x04000000	/* Do not include in the core dump */
 
 #ifdef CONFIG_MEM_SOFT_DIRTY
@@ -213,8 +214,12 @@ extern unsigned int kobjsize(const void *objp);
 #endif
 
 #if defined(CONFIG_X86)
-/* MPX specific bounds table or bounds directory */
-# define VM_MPX		VM_ARCH_2
+/*
+ * Mainline 4.14 moved VM_MPX to a high VMA bit before VM_WIPEONFORK took
+ * VM_ARCH_2. This tree only builds arm64, so refuse x86 instead of letting
+ * the two flags share a bit.
+ */
+# error "VM_WIPEONFORK shares VM_ARCH_2 with x86 MPX: move VM_MPX first"
 #endif
 
 #ifndef VM_GROWSUP
