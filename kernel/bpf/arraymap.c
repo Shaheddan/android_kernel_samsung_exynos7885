@@ -573,7 +573,6 @@ static void *perf_event_fd_array_get_ptr(struct bpf_map *map,
 	struct bpf_event_entry *ee;
 	struct perf_event *event;
 	struct file *perf_file;
-	u64 value;
 
 	perf_file = perf_event_get(fd);
 	if (IS_ERR(perf_file))
@@ -581,7 +580,11 @@ static void *perf_event_fd_array_get_ptr(struct bpf_map *map,
 
 	ee = ERR_PTR(-EOPNOTSUPP);
 	event = perf_file->private_data;
-	if (perf_event_read_local(event, &value) == -EOPNOTSUPP)
+	/* 4.4's perf_event_read_local() takes no value pointer and WARNs on
+	 * inherited events instead of returning -EOPNOTSUPP; inherited events
+	 * are the only ones the newer check rejects, so test that directly.
+	 */
+	if (event->attr.inherit)
 		goto err_out;
 
 	ee = bpf_event_entry_gen(perf_file, map_file);

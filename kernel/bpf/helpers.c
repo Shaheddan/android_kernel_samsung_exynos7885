@@ -281,7 +281,8 @@ void copy_map_value_locked(struct bpf_map *map, void *dst, void *src,
 BPF_CALL_0(bpf_get_current_cgroup_id)
 {
 	struct cgroup *cgrp = task_dfl_cgroup(current);
-	return cgrp->kn->id.id;
+	/* 4.4 kernfs has no kernfs_node_id; its inode number identifies the cgroup */
+	return cgrp->kn->ino;
 }
 const struct bpf_func_proto bpf_get_current_cgroup_id_proto = {
 	.func		= bpf_get_current_cgroup_id,

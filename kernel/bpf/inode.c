@@ -100,7 +100,7 @@ static struct inode *bpf_get_inode(struct super_block *sb,
 		return ERR_PTR(-ENOSPC);
 
 	inode->i_ino = get_next_ino();
-	inode->i_atime = current_time(inode);
+	inode->i_atime = current_fs_time(inode->i_sb);
 	inode->i_mtime = inode->i_atime;
 	inode->i_ctime = inode->i_atime;
 
@@ -128,7 +128,7 @@ static void bpf_dentry_finalize(struct dentry *dentry, struct inode *inode,
 	d_instantiate(dentry, inode);
 	dget(dentry);
 
-	dir->i_mtime = current_time(dir);
+	dir->i_mtime = current_fs_time(dir->i_sb);
 	dir->i_ctime = dir->i_mtime;
 }
 
@@ -599,7 +599,8 @@ static int bpf_parse_options(char *data, struct bpf_mount_opts *opts)
 
 static int bpf_fill_super(struct super_block *sb, void *data, int silent)
 {
-	static const struct tree_descr bpf_rfiles[] = { { "" } };
+	/* 4.4 simple_fill_super() takes a non-const tree_descr */
+	static struct tree_descr bpf_rfiles[] = { { "" } };
 	struct bpf_mount_opts opts;
 	struct inode *inode;
 	int ret;

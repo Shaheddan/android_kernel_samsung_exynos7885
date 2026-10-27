@@ -63,6 +63,7 @@
 #include <net/inet_hashtables.h>
 #include <net/inet6_hashtables.h>
 #include <net/bpf_sk_storage.h>
+#include <net/addrconf.h>
 
 /**
  *	sk_filter_trim_cap - run a packet through a socket filter
@@ -2848,29 +2849,41 @@ struct sock *sk_lookup(struct net *net, struct bpf_sock_tuple *tuple,
 		__be32 src4 = tuple->ipv4.saddr;
 		__be32 dst4 = tuple->ipv4.daddr;
 
-		if (proto == IPPROTO_TCP)
+		/* 4.4: no sdif. TCP lookups return a referenced socket;
+		 * UDP lookups are RCU-only and UDP sockets carry SOCK_RCU_FREE.
+		 */
+		if (proto == IPPROTO_TCP) {
 			sk = __inet_lookup(net, &tcp_hashinfo, NULL, 0,
 					   src4, tuple->ipv4.sport,
 					   dst4, tuple->ipv4.dport,
-					   dif, sdif, &refcounted);
-		else
+					   dif);
+			refcounted = true;
+		} else {
 			sk = __udp4_lib_lookup(net, src4, tuple->ipv4.sport,
 					       dst4, tuple->ipv4.dport,
-					       dif, sdif, &udp_table, NULL);
+					       dif, &udp_table, NULL);
+			refcounted = false;
+		}
 #if IS_ENABLED(CONFIG_IPV6)
 	} else {
 		struct in6_addr *src6 = (struct in6_addr *)&tuple->ipv6.saddr;
 		struct in6_addr *dst6 = (struct in6_addr *)&tuple->ipv6.daddr;
 
-		if (proto == IPPROTO_TCP)
+		/* 4.4: no sdif, refcounting as for IPv4 above. 4.4's
+		 * __inet6_lookup() takes the destination port in host order.
+		 */
+		if (proto == IPPROTO_TCP) {
 			sk = __inet6_lookup(net, &tcp_hashinfo, NULL, 0,
 					    src6, tuple->ipv6.sport,
-					    dst6, tuple->ipv6.dport,
-					    dif, &refcounted);
-		else
+					    dst6, ntohs(tuple->ipv6.dport),
+					    dif);
+			refcounted = true;
+		} else {
 			sk = __udp6_lib_lookup(net, src6, tuple->ipv6.sport,
 					       dst6, tuple->ipv6.dport,
-					       dif, sdif, &udp_table, NULL);
+					       dif, &udp_table, NULL);
+			refcounted = false;
+		}
 #endif
 	}
 	if (unlikely(sk && !refcounted && !sock_flag(sk, SOCK_RCU_FREE))) {
@@ -2899,10 +2912,8 @@ __bpf_sk_lookup(struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
 	if (unlikely(family == AF_UNSPEC || netns_id > U32_MAX || flags))
 		goto out;
 
-	if (family == AF_INET)
-		sdif = inet_sdif(skb);
-	else
-		sdif = inet6_sdif(skb);
+	/* 4.4 has no second (L3 master) device index */
+	sdif = 0;
 
 	if (netns_id) {
 		net = get_net_ns_by_id(caller_net, netns_id);
@@ -2914,8 +2925,25 @@ __bpf_sk_lookup(struct sk_buff *skb, struct bpf_sock_tuple *tuple, u32 len,
 		net = caller_net;
 		sk = sk_lookup(net, tuple, ifindex, sdif, family, proto);
 	}
-	if (sk)
-		sk = sk_to_full_sk(sk);
+	if (sk) {
+		struct sock *sk2 = sk_to_full_sk(sk);
+
+		/* sk_to_full_sk() may return a request socket's listener, and
+		 * a timewait socket is not a full socket at all. Only TCP gets
+		 * here (UDP sockets are always full), so sk holds a lookup
+		 * reference. Unlike upstream, 4.4 TCP listeners are not
+		 * SOCK_RCU_FREE: take a reference on the listener (pinned by
+		 * the request socket) before dropping the one on sk.
+		 */
+		if (!sk_fullsock(sk2))
+			sk2 = NULL;
+		if (sk2 != sk) {
+			if (sk2 && !sock_flag(sk2, SOCK_RCU_FREE))
+				sock_hold(sk2);
+			sock_gen_put(sk);
+			sk = sk2;
+		}
+	}
 out:
 	return (unsigned long) sk;
 }
@@ -3150,13 +3178,13 @@ u32 bpf_tcp_sock_convert_ctx_access(enum bpf_access_type type,
 
 	switch (si->off) {
 	case offsetof(struct bpf_tcp_sock, rtt_min):
-		BUILD_BUG_ON(FIELD_SIZEOF(struct tcp_sock, rtt_min) !=
-			     sizeof(struct minmax));
-		BUILD_BUG_ON(sizeof(struct minmax) <
-			     sizeof(struct minmax_sample));
+		/* 4.4 keeps the windowed min RTT as rtt_min[3] of {rtt, ts},
+		 * current minimum in rtt_min[0].rtt (struct minmax came in 4.6)
+		 */
+		BUILD_BUG_ON(FIELD_SIZEOF(struct tcp_sock, rtt_min[0].rtt) !=
+			     sizeof(u32));
 		*insn++ = BPF_LDX_MEM(BPF_W, si->dst_reg, si->src_reg,
-				      offsetof(struct tcp_sock, rtt_min) +
-				      offsetof(struct minmax_sample, v));
+				      offsetof(struct tcp_sock, rtt_min[0].rtt));
 		break;
 	}
 	return insn - insn_buf;
@@ -3618,8 +3646,13 @@ BPF_CALL_5(bpf_setsockopt, struct bpf_sock_ops_kern *, bpf_sock,
 			strncpy(name, optval, min_t(long, optlen,
 						    TCP_CA_NAME_MAX-1));
 			name[TCP_CA_NAME_MAX-1] = 0;
-			ret = tcp_set_congestion_control(sk, name, false,
-							 reinit, true);
+			/* 4.4's tcp_set_congestion_control() has no "load"
+			 * flag: it may request_module() and sleep, while BPF
+			 * runs atomically. Refuse instead of risking that.
+			 */
+			(void)name;
+			(void)reinit;
+			ret = -EOPNOTSUPP;
 		} else {
 			struct tcp_sock *tp = tcp_sk(sk);
 
