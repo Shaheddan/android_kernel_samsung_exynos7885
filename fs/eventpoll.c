@@ -2097,9 +2097,12 @@ static int ep_get_timespec64(struct timespec64 *ts,
 
 	ts->tv_sec = kts.tv_sec;
 	ts->tv_nsec = kts.tv_nsec;
-
-	if (!timespec64_valid(ts))
-		return -EINVAL;
+	/* As upstream get_timespec64(): a 32-bit caller's tv_nsec may carry
+	 * padding in its upper half. Range checks are left to
+	 * poll_select_set_timeout(), which returns -EINVAL like upstream.
+	 */
+	if (in_compat_syscall())
+		ts->tv_nsec &= 0xFFFFFFFFUL;
 
 	return 0;
 }
