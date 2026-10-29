@@ -794,6 +794,7 @@
 			cpufreq {
 				domain@0 {
 					max-freq = <1352000>;
+					eureka_max-freq = <1352000>;
 
 					dm-constraints {
 						mif-perf {
@@ -814,6 +815,7 @@
 				};
 				domain@1 {
 					max-freq = <1560000>;
+					eureka_max-freq = <1560000>;
 
 					dm-constraints {
 						mif-perf {
