@@ -102,6 +102,7 @@ enum bpf_cmd {
 	BPF_RAW_TRACEPOINT_OPEN,
 	BPF_BTF_LOAD = 18,
 	BPF_BTF_GET_FD_BY_ID = 19,
+	BPF_TASK_FD_QUERY = 20,
 	BPF_MAP_LOOKUP_AND_DELETE_ELEM = 21,
 	BPF_MAP_FREEZE = 22,
 	BPF_BTF_GET_NEXT_ID = 23,
@@ -109,6 +110,10 @@ enum bpf_cmd {
 	BPF_MAP_LOOKUP_AND_DELETE_BATCH = 25,
 	BPF_MAP_UPDATE_BATCH = 26,
 	BPF_MAP_DELETE_BATCH = 27,
+	BPF_LINK_CREATE = 28,
+	BPF_LINK_UPDATE = 29,
+	BPF_LINK_GET_FD_BY_ID = 30,
+	BPF_LINK_GET_NEXT_ID = 31,
 };
 
 enum bpf_map_type {
@@ -198,6 +203,15 @@ enum bpf_attach_type {
 
 #define MAX_BPF_ATTACH_TYPE __MAX_BPF_ATTACH_TYPE
 
+enum bpf_link_type {
+	BPF_LINK_TYPE_UNSPEC = 0,
+	BPF_LINK_TYPE_RAW_TRACEPOINT = 1,
+	BPF_LINK_TYPE_TRACING = 2,
+	BPF_LINK_TYPE_CGROUP = 3,
+
+	MAX_BPF_LINK_TYPE,
+};
+
 /* cgroup-bpf attach flags used in BPF_PROG_ATTACH command
  *
  * NONE(default): No further bpf programs allowed in the subtree.
@@ -285,6 +299,16 @@ enum bpf_attach_type {
  */
 #define BPF_PSEUDO_MAP_FD	1
 #define BPF_PSEUDO_MAP_VALUE	2
+#define BPF_PSEUDO_BTF_ID	3
+/* insn[0].src_reg:  BPF_PSEUDO_FUNC
+ * insn[0].imm:      insn offset to the func
+ * insn[1].imm:      0
+ * insn[0].off:      0
+ * insn[1].off:      0
+ * ldimm64 rewrite:  address of the function
+ * verifier type:    PTR_TO_FUNC.
+ */
+#define BPF_PSEUDO_FUNC		4
 
 /* when bpf_call->src_reg == BPF_PSEUDO_CALL, bpf_call->imm == pc-relative
  * offset to another bpf function
@@ -429,6 +453,7 @@ union bpf_attr {
 			__u32		prog_id;
 			__u32		map_id;
 			__u32		btf_id;
+			__u32		link_id;
 		};
 		__u32		next_id;
 		__u32		open_flags;
@@ -461,6 +486,32 @@ union bpf_attr {
 		__u32		btf_log_size;
 		__u32		btf_log_level;
 	};
+
+	struct {
+		__u32		pid;
+		__u32		fd;
+		__u32		flags;
+		__u32		buf_len;
+		__aligned_u64	buf;
+		__u32		prog_id;
+		__u32		fd_type;
+		__u64		probe_offset;
+		__u64		probe_addr;
+	} task_fd_query;
+
+	struct { /* struct used by BPF_LINK_CREATE command */
+		__u32		prog_fd;
+		__u32		target_fd;
+		__u32		attach_type;
+		__u32		flags;
+	} link_create;
+
+	struct { /* struct used by BPF_LINK_UPDATE command */
+		__u32		link_fd;
+		__u32		new_prog_fd;
+		__u32		flags;
+		__u32		old_prog_fd;
+	} link_update;
 } __attribute__((aligned(8)));
 
 /* BPF helper function descriptions:
@@ -969,6 +1020,14 @@ union bpf_attr {
  *		A **struct bpf_tcp_sock** pointer on success, or NULL in
  *		case of failure.
  *
+ * struct bpf_sock *bpf_get_listener_sock(struct bpf_sock *sk)
+ *	Description
+ *		Return a **struct bpf_sock** pointer in TCP_LISTEN state.
+ *		**bpf_sk_release**\ () is unnecessary and not allowed.
+ *	Return
+ *		A **struct bpf_sock** pointer on success, or NULL in
+ *		case of failure.
+ *
  * void *bpf_sk_storage_get(struct bpf_map *map, struct bpf_sock *sk, void *value, u64 flags)
  *	Description
  *		Get a bpf-local-storage from a sk.
@@ -1136,6 +1195,31 @@ union bpf_attr {
  *		calculation.
  *	Return
  *		Requested value, or 0, if flags are not recognized.
+ *
+ * long bpf_for_each_map_elem(struct bpf_map *map, void *callback_fn, void *callback_ctx, u64 flags)
+ *	Description
+ *		For each element in **map**, call **callback_fn** with **map**,
+ *		**callback_ctx**, and other map-specific parameters.
+ *		**callback_fn** must be a static function and **callback_ctx**
+ *		must be a pointer to the stack. **flags** must currently be 0.
+ *
+ *		The supported map types and callback signature are:
+ *
+ *		BPF_MAP_TYPE_HASH, BPF_MAP_TYPE_PERCPU_HASH,
+ *		BPF_MAP_TYPE_LRU_HASH, BPF_MAP_TYPE_LRU_PERCPU_HASH,
+ *		BPF_MAP_TYPE_ARRAY, BPF_MAP_TYPE_PERCPU_ARRAY
+ *
+ *		long (\*callback_fn)(struct bpf_map \*map, const void \*key,
+ *				     void \*value, void \*ctx);
+ *
+ *		For per-CPU maps, **value** is the value on the CPU where the
+ *		BPF program is running.
+ *
+ *		If **callback_fn** returns 0, the helper continues to the next
+ *		element. If it returns 1, the helper stops iterating.
+ *	Return
+ *		The number of traversed map elements on success, or **-EINVAL**
+ *		if **flags** is invalid.
  */
 #define __BPF_FUNC_MAPPER(FN)		\
 	FN(unspec),			\
@@ -1272,7 +1356,37 @@ union bpf_attr {
 	FN(ringbuf_reserve),		\
 	FN(ringbuf_submit),		\
 	FN(ringbuf_discard),		\
-	FN(ringbuf_query),
+	FN(ringbuf_query),		\
+	FN(csum_level),			\
+	FN(skc_to_tcp6_sock),		\
+	FN(skc_to_tcp_sock),		\
+	FN(skc_to_tcp_timewait_sock),	\
+	FN(skc_to_tcp_request_sock),	\
+	FN(skc_to_udp6_sock),		\
+	FN(get_task_stack),		\
+	FN(load_hdr_opt),		\
+	FN(store_hdr_opt),		\
+	FN(reserve_hdr_opt),		\
+	FN(inode_storage_get),		\
+	FN(inode_storage_delete),	\
+	FN(d_path),			\
+	FN(copy_from_user),		\
+	FN(snprintf_btf),		\
+	FN(seq_printf_btf),		\
+	FN(skb_cgroup_classid),		\
+	FN(redirect_neigh),		\
+	FN(per_cpu_ptr),		\
+	FN(this_cpu_ptr),		\
+	FN(redirect_peer),		\
+	FN(task_storage_get),		\
+	FN(task_storage_delete),	\
+	FN(get_current_task_btf),	\
+	FN(bprm_opts_set),		\
+	FN(ktime_get_coarse_ns),	\
+	FN(ima_inode_hash),		\
+	FN(sock_from_file),		\
+	FN(check_mtu),			\
+	FN(for_each_map_elem),
 
 /* integer value in 'imm' field of BPF_CALL instruction selects which helper
  * function eBPF program intends to call
@@ -1623,6 +1737,25 @@ struct bpf_map_info {
 	__u32 btf_value_type_id;
 } __attribute__((aligned(8)));
 
+struct bpf_link_info {
+	__u32 type;
+	__u32 id;
+	__u32 prog_id;
+	union {
+		struct {
+			__aligned_u64 tp_name; /* in/out: tp_name buffer ptr */
+			__u32 tp_name_len;     /* in/out: tp_name buffer len */
+		} raw_tracepoint;
+		struct {
+			__u32 attach_type;
+		} tracing;
+		struct {
+			__u64 cgroup_id;
+			__u32 attach_type;
+		} cgroup;
+	};
+} __attribute__((aligned(8)));
+
 /* User bpf_sock_addr struct to access socket fields and sockaddr struct passed
  * by user and intended to be used by socket (e.g. to bind to, depends on
  * attach attach type).
@@ -1774,6 +1907,15 @@ struct bpf_sockopt {
 	__s32	optname;
 	__s32	optlen;
 	__s32	retval;
+};
+
+enum bpf_task_fd_type {
+	BPF_FD_TYPE_RAW_TRACEPOINT,
+	BPF_FD_TYPE_TRACEPOINT,
+	BPF_FD_TYPE_KPROBE,
+	BPF_FD_TYPE_KRETPROBE,
+	BPF_FD_TYPE_UPROBE,
+	BPF_FD_TYPE_URETPROBE,
 };
 
 #endif /* _UAPI__LINUX_BPF_H__ */

@@ -45,9 +45,16 @@ struct bpf_cgroup_storage {
 	struct rcu_head rcu;
 };
 
+struct bpf_cgroup_link {
+	struct bpf_link link;
+	struct cgroup *cgroup;
+	enum bpf_attach_type type;
+};
+
 struct bpf_prog_list {
 	struct list_head node;
 	struct bpf_prog *prog;
+	struct bpf_cgroup_link *link;
 	struct bpf_cgroup_storage *storage[MAX_BPF_CGROUP_STORAGE_TYPE];
 };
 
@@ -70,22 +77,33 @@ struct cgroup_bpf {
 };
 
 void cgroup_bpf_put(struct cgroup *cgrp);
+void cgroup_bpf_offline(struct cgroup *cgrp);
 int cgroup_bpf_inherit(struct cgroup *cgrp);
 
 int __cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
 			struct bpf_prog *replace_prog,
+			struct bpf_cgroup_link *link,
 			enum bpf_attach_type type, u32 flags);
 int __cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
-			enum bpf_attach_type type, u32 flags);
+			struct bpf_cgroup_link *link,
+			enum bpf_attach_type type);
+int __cgroup_bpf_replace(struct cgroup *cgrp, struct bpf_cgroup_link *link,
+			 struct bpf_prog *new_prog);
 int __cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
 		       union bpf_attr __user *uattr);
 
 /* Wrapper for __cgroup_bpf_*() protected by cgroup_mutex */
 int cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      struct bpf_prog *replace_prog, enum bpf_attach_type type,
+		      struct bpf_prog *replace_prog,
+		      struct bpf_cgroup_link *link, enum bpf_attach_type type,
 		      u32 flags);
 int cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      enum bpf_attach_type type, u32 flags);
+		      enum bpf_attach_type type);
+int cgroup_bpf_link_detach(struct bpf_cgroup_link *link);
+int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *new_prog,
+		       struct bpf_prog *old_prog);
+int cgroup_bpf_link_attach(const union bpf_attr *attr, struct bpf_prog *prog);
+u64 cgroup_bpf_link_get_cgroup_id(const struct bpf_cgroup_link *link);
 int cgroup_bpf_query(struct cgroup *cgrp, const union bpf_attr *attr,
 		     union bpf_attr __user *uattr);
 
@@ -99,7 +117,8 @@ int __cgroup_bpf_run_filter_sk(struct sock *sk,
 int __cgroup_bpf_run_filter_sock_addr(struct sock *sk,
 				      struct sockaddr *uaddr,
 				      enum bpf_attach_type type,
-				      void *t_ctx);
+				      void *t_ctx,
+				      u32 *flags);
 
 int __cgroup_bpf_run_filter_sock_ops(struct sock *sk,
 				     struct bpf_sock_ops_kern *sock_ops,
@@ -201,30 +220,44 @@ int bpf_percpu_cgroup_storage_update(struct bpf_map *map, void *key,
 
 #define BPF_CGROUP_RUN_SA_PROG(sk, uaddr, type)				       \
 ({									       \
+	u32 __unused_flags = 0;						       \
 	int __ret = 0;							       \
 	if (cgroup_bpf_enabled)						       \
 		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr, type,     \
-							  NULL);	       \
+							  NULL,		       \
+							  &__unused_flags);    \
 	__ret;								       \
 })
 
 #define BPF_CGROUP_RUN_SA_PROG_LOCK(sk, uaddr, type, t_ctx)		       \
 ({									       \
+	u32 __unused_flags = 0;						       \
 	int __ret = 0;							       \
 	if (cgroup_bpf_enabled)	{					       \
 		lock_sock(sk);						       \
 		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr, type,     \
-							  t_ctx);	       \
+							  t_ctx,	       \
+							  &__unused_flags);    \
 		release_sock(sk);					       \
 	}								       \
 	__ret;								       \
 })
 
-#define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr)			       \
-	BPF_CGROUP_RUN_SA_PROG(sk, uaddr, BPF_CGROUP_INET4_BIND)
-
-#define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr)			       \
-	BPF_CGROUP_RUN_SA_PROG(sk, uaddr, BPF_CGROUP_INET6_BIND)
+/* BPF_CGROUP_INET{4,6}_BIND can return extra flags in the upper bits
+ * of the return code. Bit 0 asks bind to bypass CAP_NET_BIND_SERVICE.
+ */
+#define BPF_CGROUP_RUN_PROG_INET_BIND(sk, uaddr, type, bind_flags)	       \
+({									       \
+	u32 __flags = 0;						       \
+	int __ret = 0;							       \
+	if (cgroup_bpf_enabled) {					       \
+		__ret = __cgroup_bpf_run_filter_sock_addr(sk, uaddr, type,     \
+							  NULL, &__flags);     \
+		if (__flags & BPF_RET_BIND_NO_CAP_NET_BIND_SERVICE)	       \
+			*(bind_flags) |= BIND_NO_CAP_NET_BIND_SERVICE;	       \
+	}								       \
+	__ret;								       \
+})
 
 #define BPF_CGROUP_PRE_CONNECT_ENABLED(sk) (cgroup_bpf_enabled && \
 					    sk->sk_prot->pre_connect)
@@ -333,6 +366,7 @@ static inline void bpf_cgroup_storage_free(
 
 struct cgroup_bpf {};
 static inline void cgroup_bpf_put(struct cgroup *cgrp) {}
+static inline void cgroup_bpf_offline(struct cgroup *cgrp) {}
 static inline int cgroup_bpf_inherit(struct cgroup *cgrp) { return 0; }
 
 static inline int bpf_percpu_cgroup_storage_copy(struct bpf_map *map, void *key,
@@ -350,8 +384,7 @@ static inline int bpf_percpu_cgroup_storage_update(struct bpf_map *map,
 #define BPF_CGROUP_RUN_PROG_INET_EGRESS(sk,skb) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk) ({ 0; })
-#define BPF_CGROUP_RUN_PROG_INET4_BIND(sk, uaddr) ({ 0; })
-#define BPF_CGROUP_RUN_PROG_INET6_BIND(sk, uaddr) ({ 0; })
+#define BPF_CGROUP_RUN_PROG_INET_BIND(sk, uaddr, type, flags) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET4_POST_BIND(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET6_POST_BIND(sk) ({ 0; })
 #define BPF_CGROUP_RUN_PROG_INET4_CONNECT(sk, uaddr) ({ 0; })
