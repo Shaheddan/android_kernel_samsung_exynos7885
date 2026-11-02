@@ -427,7 +427,10 @@ int inet_release(struct socket *sock)
 	if (sk) {
 		long timeout;
 
-		if (!sk->sk_kern_sock)
+		/* 4.4 has no sk_kern_sock; sk_alloc() marks kernel sockets
+		 * by not taking a netns reference (sk_net_refcnt == 0).
+		 */
+		if (sk->sk_net_refcnt)
 			BPF_CGROUP_RUN_PROG_INET_SOCK_RELEASE(sk);
 
 		/* Applications forget to leave groups before exiting */
