@@ -14,7 +14,20 @@ struct trace_buffer;
 struct tracer;
 struct dentry;
 struct bpf_prog;
-struct bpf_raw_event_map;
+struct tracepoint;
+
+/*
+ * A raw tracepoint a BPF program can attach to (4.17; upstream keeps it in
+ * tracepoint-defs.h, which 4.4 does not have). The synced kernel/bpf/syscall.c
+ * reads it for raw_tp links even with CONFIG_BPF_EVENTS off, when
+ * bpf_get_raw_tracepoint() never returns one.
+ */
+struct bpf_raw_event_map {
+	struct tracepoint	*tp;
+	void			*bpf_func;
+	u32			num_args;
+	u32			writable_size;
+} __aligned(32);
 
 struct trace_print_flags {
 	unsigned long		mask;
