@@ -20,6 +20,7 @@
 
 #include <net/sch_generic.h>
 
+#include <asm/byteorder.h>
 #include <asm/cacheflush.h>
 
 #include <uapi/linux/filter.h>
@@ -33,6 +34,7 @@ struct xdp_rxq_info;
 struct xdp_buff;
 struct ctl_table;
 struct ctl_table_header;
+struct sock_reuseport;
 
 /* ArgX, context and stack frame pointer register positions. Note,
  * Arg1, Arg2, Arg3, etc are used as argument mappings of function
@@ -58,6 +60,9 @@ struct ctl_table_header;
 
 /* unused opcode to mark special call to bpf_tail_call() helper */
 #define BPF_TAIL_CALL	0xf0
+
+/* unused opcode to mark special load instruction. Same as BPF_ABS */
+#define BPF_PROBE_MEM	0x20
 
 /* unused opcode to mark call to interpreter with arguments */
 #define BPF_CALL_ARGS	0xe0
@@ -179,6 +184,20 @@ struct ctl_table_header;
 		.off   = (insn).off,				\
 		.imm   = (insn).imm })
 
+/* Special form of mov32, used for doing explicit zero extension on dst. */
+#define BPF_ZEXT_REG(DST)					\
+	((struct bpf_insn) {					\
+		.code  = BPF_ALU | BPF_MOV | BPF_X,		\
+		.dst_reg = DST,					\
+		.src_reg = DST,					\
+		.off   = 0,					\
+		.imm   = 1 })
+
+static inline bool insn_is_zext(const struct bpf_insn *insn)
+{
+	return insn->code == (BPF_ALU | BPF_MOV | BPF_X) && insn->imm == 1;
+}
+
 /* BPF_LD_IMM64 macro encodes single 'load 64-bit immediate' insn */
 #define BPF_LD_IMM64(DST, IMM)					\
 	BPF_LD_IMM64_RAW(DST, 0, IMM)
@@ -288,6 +307,23 @@ struct ctl_table_header;
 		.src_reg = SRC,					\
 		.off   = OFF,					\
 		.imm   = 0 })
+
+/* Conditional jumps in 32-bit mode. */
+#define BPF_JMP32_REG(OP, DST, SRC, OFF)\
+	((struct bpf_insn) {\
+		.code  = BPF_JMP32 | BPF_OP(OP) | BPF_X,\
+		.dst_reg = DST,\
+		.src_reg = SRC,\
+		.off   = OFF,\
+		.imm   = 0 })
+
+#define BPF_JMP32_IMM(OP, DST, IMM, OFF)\
+	((struct bpf_insn) {\
+		.code  = BPF_JMP32 | BPF_OP(OP) | BPF_K,\
+		.dst_reg = DST,\
+		.src_reg = 0,\
+		.off   = OFF,\
+		.imm   = IMM })
 
 /* Conditional jumps against immediates, if (dst_reg 'op' imm32) goto pc + off16 */
 
@@ -485,15 +521,17 @@ struct sock_fprog_kern {
 
 struct bpf_binary_header {
 	unsigned int pages;
-	u8 image[];
+
+	/* Some arches need word alignment for their instructions */
+	u8 image[] __aligned(4);
 };
 
 struct bpf_prog {
 	u16			pages;		/* Number of allocated pages */
 	kmemcheck_bitfield_begin(meta);
 	u16			jited:1,	/* Is our filter JIT'ed? */
+				undo_set_mem:1,	/* Passed set_memory_ro() checkpoint */
 				jit_requested:1,/* archs need to JIT the prog */
-				locked:1,	/* Program image locked? */
 				gpl_compatible:1, /* Is filter GPL compatible? */
 				cb_access:1,	/* Is control block accessed? */
 				dst_needed:1,	/* Do we need dst entry? */
@@ -657,16 +695,32 @@ static inline bool bpf_prog_was_classic(const struct bpf_prog *prog)
 	return prog->type == BPF_PROG_TYPE_UNSPEC;
 }
 
-static inline bool
-bpf_ctx_narrow_access_ok(u32 off, u32 size, const u32 size_default)
+static inline u32 bpf_ctx_off_adjust_machine(u32 size)
 {
-	bool off_ok;
+	const u32 size_machine = sizeof(unsigned long);
+
+	if (size > size_machine && size % size_machine == 0)
+		size = size_machine;
+
+	return size;
+}
+
+static inline bool
+bpf_ctx_narrow_access_ok(u32 off, u32 size, u32 size_default)
+{
+	return size <= size_default && (size & (size - 1)) == 0;
+}
+
+static inline u8
+bpf_ctx_narrow_load_shift(u32 off, u32 size, u32 size_default)
+{
+	u8 load_off = off & (size_default - 1);
+
 #ifdef __LITTLE_ENDIAN
-	off_ok = (off & (size_default - 1)) == 0;
+	return load_off * 8;
 #else
-	off_ok = (off & (size_default - 1)) + size == size_default;
+	return (size_default - (load_off + size)) * 8;
 #endif
-	return off_ok && size <= size_default && (size & (size - 1)) == 0;
 }
 
 #define bpf_classic_proglen(fprog) (fprog->len * sizeof(fprog->filter[0]))
@@ -674,29 +728,24 @@ bpf_ctx_narrow_access_ok(u32 off, u32 size, const u32 size_default)
 #ifdef CONFIG_ARCH_HAS_SET_MEMORY
 static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
 {
-	fp->locked = 1;
-	WARN_ON_ONCE(set_memory_ro((unsigned long)fp, fp->pages));
+	fp->undo_set_mem = 1;
+	set_memory_ro((unsigned long)fp, fp->pages);
 }
 
 static inline void bpf_prog_unlock_ro(struct bpf_prog *fp)
 {
-	if (fp->locked) {
-		WARN_ON_ONCE(set_memory_rw((unsigned long)fp, fp->pages));
-		/* In case set_memory_rw() fails, we want to be the first
-		 * to crash here instead of some random place later on.
-		 */
-		fp->locked = 0;
-	}
+	if (fp->undo_set_mem)
+		set_memory_rw((unsigned long)fp, fp->pages);
 }
 
 static inline void bpf_jit_binary_lock_ro(struct bpf_binary_header *hdr)
 {
-	WARN_ON_ONCE(set_memory_ro((unsigned long)hdr, hdr->pages));
+	set_memory_ro((unsigned long)hdr, hdr->pages);
 }
 
 static inline void bpf_jit_binary_unlock_ro(struct bpf_binary_header *hdr)
 {
-	WARN_ON_ONCE(set_memory_rw((unsigned long)hdr, hdr->pages));
+	set_memory_rw((unsigned long)hdr, hdr->pages);
 }
 #else
 static inline void bpf_prog_lock_ro(struct bpf_prog *fp)
@@ -764,6 +813,7 @@ int sk_attach_filter(struct sock_fprog *fprog, struct sock *sk);
 int sk_attach_bpf(u32 ufd, struct sock *sk);
 int sk_reuseport_attach_filter(struct sock_fprog *fprog, struct sock *sk);
 int sk_reuseport_attach_bpf(u32 ufd, struct sock *sk);
+void sk_reuseport_prog_free(struct bpf_prog *prog);
 int sk_detach_filter(struct sock *sk);
 int sk_get_filter(struct sock *sk, struct sock_filter __user *filter,
 		  unsigned int len);
@@ -778,6 +828,7 @@ u64 __bpf_call_base(u64 r1, u64 r2, u64 r3, u64 r4, u64 r5);
 
 struct bpf_prog *bpf_int_jit_compile(struct bpf_prog *prog);
 void bpf_jit_compile(struct bpf_prog *prog);
+bool bpf_jit_needs_zext(void);
 bool bpf_helper_changes_pkt_data(void *func);
 
 static inline bool bpf_dump_raw_ok(void)
@@ -790,6 +841,7 @@ static inline bool bpf_dump_raw_ok(void)
 
 struct bpf_prog *bpf_patch_insn_single(struct bpf_prog *prog, u32 off,
 				       const struct bpf_insn *patch, u32 len);
+int bpf_remove_insns(struct bpf_prog *prog, u32 off, u32 cnt);
 
 /* The pair of xdp_do_redirect and xdp_do_flush_map MUST be called in the
  * same cpu context. Further for best results no more than a single map
@@ -805,6 +857,20 @@ int xdp_do_redirect(struct net_device *dev,
 void xdp_do_flush_map(void);
 
 void bpf_warn_invalid_xdp_action(u32 act);
+
+#ifdef CONFIG_INET
+struct sock *bpf_run_sk_reuseport(struct sock_reuseport *reuse, struct sock *sk,
+				  struct bpf_prog *prog, struct sk_buff *skb,
+				  u32 hash);
+#else
+static inline struct sock *
+bpf_run_sk_reuseport(struct sock_reuseport *reuse, struct sock *sk,
+		     struct bpf_prog *prog, struct sk_buff *skb,
+		     u32 hash)
+{
+	return NULL;
+}
+#endif
 
 #ifdef CONFIG_BPF_JIT
 extern int bpf_jit_enable;

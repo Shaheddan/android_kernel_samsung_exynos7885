@@ -67,7 +67,7 @@ const char *const bpf_class_string[8] = {
 	[BPF_STX]   = "stx",
 	[BPF_ALU]   = "alu",
 	[BPF_JMP]   = "jmp",
-	[BPF_RET]   = "BUG",
+	[BPF_JMP32] = "jmp32",
 	[BPF_ALU64] = "alu64",
 };
 
@@ -206,10 +206,11 @@ void print_bpf_insn(const struct bpf_insn_cbs *cbs,
 			 * part of the ldimm64 insn is accessible.
 			 */
 			u64 imm = ((u64)(insn + 1)->imm << 32) | (u32)insn->imm;
-			bool map_ptr = insn->src_reg == BPF_PSEUDO_MAP_FD;
+			bool is_ptr = insn->src_reg == BPF_PSEUDO_MAP_FD ||
+				      insn->src_reg == BPF_PSEUDO_MAP_VALUE;
 			char tmp[64];
 
-			if (map_ptr && !allow_ptr_leaks)
+			if (is_ptr && !allow_ptr_leaks)
 				imm = 0;
 
 			verbose(cbs->private_data, "(%02x) r%d = %s\n",
@@ -220,7 +221,8 @@ void print_bpf_insn(const struct bpf_insn_cbs *cbs,
 			verbose(cbs->private_data, "BUG_ld_%02x\n", insn->code);
 			return;
 		}
-	} else if (class == BPF_JMP) {
+	} else if (class == BPF_JMP || class == BPF_JMP32) {
+		const char *reg = class == BPF_JMP32 ? "w" : "r";
 		u8 opcode = BPF_OP(insn->code);
 
 		if (opcode == BPF_CALL) {
@@ -243,13 +245,13 @@ void print_bpf_insn(const struct bpf_insn_cbs *cbs,
 		} else if (insn->code == (BPF_JMP | BPF_EXIT)) {
 			verbose(cbs->private_data, "(%02x) exit\n", insn->code);
 		} else if (BPF_SRC(insn->code) == BPF_X) {
-			verbose(cbs->private_data, "(%02x) if r%d %s r%d goto pc%+d\n",
-				insn->code, insn->dst_reg,
+			verbose(cbs->private_data, "(%02x) if %s%d %s %s%d goto pc%+d\n",
+				insn->code, reg, insn->dst_reg,
 				bpf_jmp_string[BPF_OP(insn->code) >> 4],
-				insn->src_reg, insn->off);
+				reg, insn->src_reg, insn->off);
 		} else {
-			verbose(cbs->private_data, "(%02x) if r%d %s 0x%x goto pc%+d\n",
-				insn->code, insn->dst_reg,
+			verbose(cbs->private_data, "(%02x) if %s%d %s 0x%x goto pc%+d\n",
+				insn->code, reg, insn->dst_reg,
 				bpf_jmp_string[BPF_OP(insn->code) >> 4],
 				insn->imm, insn->off);
 		}
