@@ -5553,6 +5553,8 @@ static int cgroup_destroy_locked(struct cgroup *cgrp)
 
 	check_for_release(cgroup_parent(cgrp));
 
+	cgroup_bpf_offline(cgrp);
+
 	/* put the base reference */
 	percpu_ref_kill(&cgrp->self.refcnt);
 
@@ -6544,22 +6546,78 @@ subsys_initcall(cgroup_namespaces_init);
 
 #ifdef CONFIG_CGROUP_BPF
 int cgroup_bpf_attach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      enum bpf_attach_type type, u32 flags)
+		      struct bpf_prog *replace_prog,
+		      struct bpf_cgroup_link *link, enum bpf_attach_type type,
+		      u32 flags)
 {
 	int ret;
 
 	mutex_lock(&cgroup_mutex);
-	ret = __cgroup_bpf_attach(cgrp, prog, type, flags);
+	ret = __cgroup_bpf_attach(cgrp, prog, replace_prog, link, type, flags);
 	mutex_unlock(&cgroup_mutex);
 	return ret;
 }
+
+int cgroup_bpf_replace(struct bpf_link *link, struct bpf_prog *new_prog,
+		       struct bpf_prog *old_prog)
+{
+	struct bpf_cgroup_link *cg_link =
+		container_of(link, struct bpf_cgroup_link, link);
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	if (!cg_link->cgroup) {
+		ret = -EINVAL;
+		goto out_unlock;
+	}
+	if (old_prog && link->prog != old_prog) {
+		ret = -EPERM;
+		goto out_unlock;
+	}
+	ret = __cgroup_bpf_replace(cg_link->cgroup, cg_link, new_prog);
+out_unlock:
+	mutex_unlock(&cgroup_mutex);
+	return ret;
+}
+
+int cgroup_bpf_link_detach(struct bpf_cgroup_link *link)
+{
+	struct cgroup *cgrp;
+	int ret;
+
+	mutex_lock(&cgroup_mutex);
+	cgrp = link->cgroup;
+	if (!cgrp) {
+		ret = 0;
+		goto out_unlock;
+	}
+	ret = __cgroup_bpf_detach(cgrp, NULL, link, link->type);
+out_unlock:
+	mutex_unlock(&cgroup_mutex);
+	if (!ret && cgrp)
+		cgroup_put(cgrp);
+	return ret;
+}
+
+u64 cgroup_bpf_link_get_cgroup_id(const struct bpf_cgroup_link *link)
+{
+	u64 cgroup_id = 0;
+
+	mutex_lock(&cgroup_mutex);
+	if (link->cgroup)
+		cgroup_id = cgroup_ino(link->cgroup);
+	mutex_unlock(&cgroup_mutex);
+
+	return cgroup_id;
+}
+
 int cgroup_bpf_detach(struct cgroup *cgrp, struct bpf_prog *prog,
-		      enum bpf_attach_type type, u32 flags)
+		      enum bpf_attach_type type)
 {
 	int ret;
 
 	mutex_lock(&cgroup_mutex);
-	ret = __cgroup_bpf_detach(cgrp, prog, type, flags);
+	ret = __cgroup_bpf_detach(cgrp, prog, NULL, type);
 	mutex_unlock(&cgroup_mutex);
 	return ret;
 }

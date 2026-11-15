@@ -218,3 +218,10 @@ obj-$(CONFIG_GPS_BCM4753)	+= gps/
 
 # TZIC
 obj-y  += security/samsung/tzic/
+
+# KernelSU-Next (legacy branch, vendored in KernelSU-Next/). It has no .git of its
+# own here, so pass the version its Kbuild would derive from the upstream commit
+# count: the manager app refuses kernels below its minimum version.
+export KSU_VERSION_OVERRIDE := 33315
+export KSU_VERSION_TAG_OVERRIDE := v3.4.0-legacy
+obj-$(CONFIG_KSU) += kernelsu/

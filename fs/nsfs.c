@@ -44,22 +44,14 @@ static void nsfs_evict(struct inode *inode)
 	ns->ops->put(ns);
 }
 
-void *ns_get_path(struct path *path, struct task_struct *task,
-			const struct proc_ns_operations *ns_ops)
+static void *__ns_get_path(struct path *path, struct ns_common *ns)
 {
 	struct vfsmount *mnt = mntget(nsfs_mnt);
 	struct qstr qname = { .name = "", };
 	struct dentry *dentry;
 	struct inode *inode;
-	struct ns_common *ns;
 	unsigned long d;
 
-again:
-	ns = ns_ops->get(task);
-	if (!ns) {
-		mntput(mnt);
-		return ERR_PTR(-ENOENT);
-	}
 	rcu_read_lock();
 	d = atomic_long_read(&ns->stashed);
 	if (!d)
@@ -68,7 +60,7 @@ again:
 	if (!lockref_get_not_dead(&dentry->d_lockref))
 		goto slow;
 	rcu_read_unlock();
-	ns_ops->put(ns);
+	ns->ops->put(ns);
 got_it:
 	path->mnt = mnt;
 	path->dentry = dentry;
@@ -77,7 +69,7 @@ slow:
 	rcu_read_unlock();
 	inode = new_inode_pseudo(mnt->mnt_sb);
 	if (!inode) {
-		ns_ops->put(ns);
+		ns->ops->put(ns);
 		mntput(mnt);
 		return ERR_PTR(-ENOMEM);
 	}
@@ -96,15 +88,55 @@ slow:
 	}
 	d_instantiate(dentry, inode);
 	dentry->d_flags |= DCACHE_RCUACCESS;
-	dentry->d_fsdata = (void *)ns_ops;
+	dentry->d_fsdata = (void *)ns->ops;
 	d = atomic_long_cmpxchg(&ns->stashed, 0, (unsigned long)dentry);
 	if (d) {
 		d_delete(dentry);	/* make sure ->d_prune() does nothing */
 		dput(dentry);
 		cpu_relax();
-		goto again;
+		return ERR_PTR(-EAGAIN);
 	}
 	goto got_it;
+}
+
+void *ns_get_path_cb(struct path *path, ns_get_path_helper_t *ns_get_cb,
+		     void *private_data)
+{
+	struct ns_common *ns;
+	void *ret;
+
+again:
+	ns = ns_get_cb(private_data);
+	if (!ns)
+		return ERR_PTR(-ENOENT);
+
+	ret = __ns_get_path(path, ns);
+	if (IS_ERR(ret) && PTR_ERR(ret) == -EAGAIN)
+		goto again;
+	return ret;
+}
+
+struct ns_get_path_task_args {
+	const struct proc_ns_operations *ns_ops;
+	struct task_struct *task;
+};
+
+static struct ns_common *ns_get_path_task(void *private_data)
+{
+	struct ns_get_path_task_args *args = private_data;
+
+	return args->ns_ops->get(args->task);
+}
+
+void *ns_get_path(struct path *path, struct task_struct *task,
+		  const struct proc_ns_operations *ns_ops)
+{
+	struct ns_get_path_task_args args = {
+		.ns_ops	= ns_ops,
+		.task	= task,
+	};
+
+	return ns_get_path_cb(path, ns_get_path_task, &args);
 }
 
 int ns_get_name(char *buf, size_t size, struct task_struct *task,

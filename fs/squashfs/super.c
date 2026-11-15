@@ -78,7 +78,7 @@ static int squashfs_fill_super(struct super_block *sb, void *data, int silent)
 	TRACE("Entered squashfs_fill_superblock\n");
 
 	if (!devblksize) {
-		errorf(fc, "squashfs: unable to set blocksize\n");
+		ERROR("unable to set blocksize\n");
 		return -EINVAL;
 	}
 

@@ -14,6 +14,20 @@ struct trace_buffer;
 struct tracer;
 struct dentry;
 struct bpf_prog;
+struct tracepoint;
+
+/*
+ * A raw tracepoint a BPF program can attach to (4.17; upstream keeps it in
+ * tracepoint-defs.h, which 4.4 does not have). The synced kernel/bpf/syscall.c
+ * reads it for raw_tp links even with CONFIG_BPF_EVENTS off, when
+ * bpf_get_raw_tracepoint() never returns one.
+ */
+struct bpf_raw_event_map {
+	struct tracepoint	*tp;
+	void			*bpf_func;
+	u32			num_args;
+	u32			writable_size;
+} __aligned(32);
 
 struct trace_print_flags {
 	unsigned long		mask;
@@ -582,6 +596,13 @@ event_trigger_unlock_commit_regs(struct trace_event_file *file,
 unsigned int trace_call_bpf(struct trace_event_call *call, void *ctx);
 int perf_event_attach_bpf_prog(struct perf_event *event, struct bpf_prog *prog);
 void perf_event_detach_bpf_prog(struct perf_event *event);
+int bpf_probe_register(struct bpf_raw_event_map *btp, struct bpf_prog *prog);
+int bpf_probe_unregister(struct bpf_raw_event_map *btp, struct bpf_prog *prog);
+struct bpf_raw_event_map *bpf_get_raw_tracepoint(const char *name);
+void bpf_put_raw_tracepoint(struct bpf_raw_event_map *btp);
+int bpf_get_perf_event_info(const struct perf_event *event, u32 *prog_id,
+			    u32 *fd_type, const char **buf,
+			    u64 *probe_offset, u64 *probe_addr);
 #else
 static inline unsigned int trace_call_bpf(struct trace_event_call *call, void *ctx)
 {
@@ -596,6 +617,28 @@ perf_event_attach_bpf_prog(struct perf_event *event, struct bpf_prog *prog)
 
 static inline void perf_event_detach_bpf_prog(struct perf_event *event) { }
 
+static inline int bpf_probe_register(struct bpf_raw_event_map *btp, struct bpf_prog *p)
+{
+	return -EOPNOTSUPP;
+}
+static inline int bpf_probe_unregister(struct bpf_raw_event_map *btp, struct bpf_prog *p)
+{
+	return -EOPNOTSUPP;
+}
+static inline struct bpf_raw_event_map *bpf_get_raw_tracepoint(const char *name)
+{
+	return NULL;
+}
+static inline void bpf_put_raw_tracepoint(struct bpf_raw_event_map *btp)
+{
+}
+static inline int bpf_get_perf_event_info(const struct perf_event *event,
+					  u32 *prog_id, u32 *fd_type,
+					  const char **buf, u64 *probe_offset,
+					  u64 *probe_addr)
+{
+	return -EOPNOTSUPP;
+}
 #endif
 
 enum {
@@ -648,6 +691,17 @@ extern int  perf_trace_init(struct perf_event *event);
 extern void perf_trace_destroy(struct perf_event *event);
 extern int  perf_trace_add(struct perf_event *event, int flags);
 extern void perf_trace_del(struct perf_event *event, int flags);
+#ifdef CONFIG_KPROBE_EVENTS
+extern int bpf_get_kprobe_info(const struct perf_event *event,
+			       u32 *fd_type, const char **symbol,
+			       u64 *probe_offset, u64 *probe_addr,
+			       bool perf_type_tracepoint);
+#endif
+#ifdef CONFIG_UPROBE_EVENTS
+extern int bpf_get_uprobe_info(const struct perf_event *event,
+			       u32 *fd_type, const char **filename,
+			       u64 *probe_offset, bool perf_type_tracepoint);
+#endif
 extern int  ftrace_profile_set_filter(struct perf_event *event, int event_id,
 				     char *filter_str);
 extern void ftrace_profile_free_filter(struct perf_event *event);

@@ -270,6 +270,8 @@ struct sock *__udp6_lib_lookup(struct net *net,
 		result = udp6_lib_lookup2(net, saddr, sport,
 					  daddr, hnum, dif,
 					  hslot2, slot2, skb);
+		if (unlikely(IS_ERR(result)))
+			return NULL;
 		if (!result) {
 			hash2 = udp6_portaddr_hash(net, &in6addr_any, hnum);
 			slot2 = hash2 & udptable->mask;
@@ -280,6 +282,8 @@ struct sock *__udp6_lib_lookup(struct net *net,
 			result = udp6_lib_lookup2(net, saddr, sport,
 						  &in6addr_any, hnum, dif,
 						  hslot2, slot2, skb);
+			if (unlikely(IS_ERR(result)))
+				return NULL;
 		}
 		return result;
 	}
@@ -295,6 +299,8 @@ begin:
 						    saddr, sport);
 				result = reuseport_select_sock(sk, hash, skb,
 							sizeof(struct udphdr));
+				if (unlikely(IS_ERR(result)))
+					return NULL;
 				if (result)
 					return result;
 				matches = 1;
@@ -368,7 +374,7 @@ int udpv6_recvmsg(struct sock *sk, struct msghdr *msg, size_t len,
 	if (flags & MSG_ERRQUEUE)
 		return ipv6_recv_error(sk, msg, len, addr_len);
 
-	if (np->rxpmtu && np->rxopt.bits.rxpmtu)
+	if (np->rxopt.bits.rxpmtu && READ_ONCE(np->rxpmtu))
 		return ipv6_recv_rxpmtu(sk, msg, len, addr_len);
 
 try_again:

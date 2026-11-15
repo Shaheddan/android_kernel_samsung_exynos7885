@@ -1192,6 +1192,35 @@ kretprobe_perf_func(struct trace_kprobe *tk, struct kretprobe_instance *ri,
 			      head, NULL);
 }
 NOKPROBE_SYMBOL(kretprobe_perf_func);
+
+int bpf_get_kprobe_info(const struct perf_event *event, u32 *fd_type,
+			const char **symbol, u64 *probe_offset,
+			u64 *probe_addr, bool perf_type_tracepoint)
+{
+	const char *pevent = trace_event_name(event->tp_event);
+	const char *group = event->tp_event->class->system;
+	struct trace_kprobe *tk;
+
+	if (perf_type_tracepoint)
+		tk = find_trace_kprobe(pevent, group);
+	else
+		tk = event->tp_event->data;
+	if (!tk)
+		return -EINVAL;
+
+	*fd_type = trace_kprobe_is_return(tk) ? BPF_FD_TYPE_KRETPROBE
+					      : BPF_FD_TYPE_KPROBE;
+	if (tk->symbol) {
+		*symbol = tk->symbol;
+		*probe_offset = tk->rp.kp.offset;
+		*probe_addr = 0;
+	} else {
+		*symbol = NULL;
+		*probe_offset = 0;
+		*probe_addr = (unsigned long)tk->rp.kp.addr;
+	}
+	return 0;
+}
 #endif	/* CONFIG_PERF_EVENTS */
 
 /*
@@ -1230,13 +1259,14 @@ static int kprobe_register(struct trace_event_call *event,
 static int kprobe_dispatcher(struct kprobe *kp, struct pt_regs *regs)
 {
 	struct trace_kprobe *tk = container_of(kp, struct trace_kprobe, rp.kp);
+	unsigned int flags = trace_probe_load_flag(&tk->tp);
 
 	tk->nhit++;
 
-	if (tk->tp.flags & TP_FLAG_TRACE)
+	if (flags & TP_FLAG_TRACE)
 		kprobe_trace_func(tk, regs);
 #ifdef CONFIG_PERF_EVENTS
-	if (tk->tp.flags & TP_FLAG_PROFILE)
+	if (flags & TP_FLAG_PROFILE)
 		kprobe_perf_func(tk, regs);
 #endif
 	return 0;	/* We don't tweek kernel, so just return 0 */
@@ -1247,13 +1277,15 @@ static int
 kretprobe_dispatcher(struct kretprobe_instance *ri, struct pt_regs *regs)
 {
 	struct trace_kprobe *tk = container_of(ri->rp, struct trace_kprobe, rp);
+	unsigned int flags;
 
 	tk->nhit++;
 
-	if (tk->tp.flags & TP_FLAG_TRACE)
+	flags = trace_probe_load_flag(&tk->tp);
+	if (flags & TP_FLAG_TRACE)
 		kretprobe_trace_func(tk, ri, regs);
 #ifdef CONFIG_PERF_EVENTS
-	if (tk->tp.flags & TP_FLAG_PROFILE)
+	if (flags & TP_FLAG_PROFILE)
 		kretprobe_perf_func(tk, ri, regs);
 #endif
 	return 0;	/* We don't tweek kernel, so just return 0 */

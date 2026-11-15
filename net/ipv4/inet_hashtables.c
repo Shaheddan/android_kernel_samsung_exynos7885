@@ -238,6 +238,11 @@ begin:
 					struct sock *sk2;
 					sk2 = reuseport_select_sock(sk, phash,
 								    skb, doff);
+					/* an SK_REUSEPORT program dropped it */
+					if (unlikely(IS_ERR(sk2))) {
+						rcu_read_unlock();
+						return NULL;
+					}
 					if (sk2) {
 						result = sk2;
 						goto found;
@@ -484,10 +489,11 @@ static int inet_reuseport_add_sock(struct sock *sk,
 		    inet_csk(sk2)->icsk_bind_hash == tb &&
 		    sk2->sk_reuseport && uid_eq(uid, sock_i_uid(sk2)) &&
 		    saddr_same(sk, sk2, false))
-			return reuseport_add_sock(sk, sk2);
+			return reuseport_add_sock(sk, sk2,
+						  inet_rcv_saddr_any(sk));
 	}
 
-	return reuseport_alloc(sk);
+	return reuseport_alloc(sk, inet_rcv_saddr_any(sk));
 }
 
 int __inet_hash(struct sock *sk, struct sock *osk,

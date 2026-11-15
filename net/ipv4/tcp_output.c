@@ -1026,6 +1026,8 @@ static int __tcp_transmit_skb(struct sock *sk, struct sk_buff *skb,
 			      tcp_skb_pcount(skb));
 
 	tp->segs_out += tcp_skb_pcount(skb);
+	if (skb->len != tcp_header_size)
+		tp->data_segs_out += tcp_skb_pcount(skb);
 	/* OK, its time to fill skb_shinfo(skb)->gso_{segs|size} */
 	skb_shinfo(skb)->gso_segs = tcp_skb_pcount(skb);
 	skb_shinfo(skb)->gso_size = tcp_skb_mss(skb);

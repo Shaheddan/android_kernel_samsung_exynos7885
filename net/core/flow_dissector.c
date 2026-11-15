@@ -68,6 +68,23 @@ void skb_flow_dissector_init(struct flow_dissector *flow_dissector,
 }
 EXPORT_SYMBOL(skb_flow_dissector_init);
 
+/*
+ * BPF_PROG_TYPE_FLOW_DISSECTOR (upstream 4.20) needs the 4.20 dissector,
+ * which hands its keys to the program; this 4.4 dissector cannot run one.
+ * Programs of that type still load (the eBPF core knows the type), but
+ * attaching them is refused rather than accepted and silently ignored.
+ */
+int skb_flow_dissector_bpf_prog_attach(const union bpf_attr *attr,
+				       struct bpf_prog *prog)
+{
+	return -EOPNOTSUPP;
+}
+
+int skb_flow_dissector_bpf_prog_detach(const union bpf_attr *attr)
+{
+	return -ENOENT;
+}
+
 /**
  * __skb_flow_get_ports - extract the upper layer ports and return them
  * @skb: sk_buff to extract the ports from

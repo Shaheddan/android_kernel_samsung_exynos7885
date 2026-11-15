@@ -160,6 +160,13 @@ schedtune_boostgroup_update(int idx, int boost)
 	return 0;
 }
 
+/* Task count deltas for schedtune_tasks_update(), as in AOSP */
+#define ENQUEUE_TASK  1
+#define DEQUEUE_TASK -1
+
+/* Tasks can exit before the root group exists; skip accounting until then */
+static bool schedtune_initialized = false;
+
 static inline void
 schedtune_tasks_update(struct task_struct *p, int cpu, int idx, int task_count)
 {
@@ -244,7 +251,7 @@ void schedtune_exit_task(struct task_struct *tsk)
 	if (!unlikely(schedtune_initialized))
 		return;
 
-	rq = lock_rq_of(tsk, &irq_flags);
+	rq = task_rq_lock(tsk, &irq_flags);
 	rcu_read_lock();
 
 	cpu = cpu_of(rq);
@@ -253,7 +260,7 @@ void schedtune_exit_task(struct task_struct *tsk)
 	schedtune_tasks_update(tsk, cpu, idx, DEQUEUE_TASK);
 
 	rcu_read_unlock();
-	unlock_rq_of(rq, tsk, &irq_flags);
+	task_rq_unlock(rq, tsk, &irq_flags);
 }
 
 int schedtune_cpu_boost(int cpu)
@@ -371,6 +378,8 @@ schedtune_init(void)
 
 	pr_info("  schedtune configured to support %d boost groups\n",
 		BOOSTGROUPS_COUNT);
+
+	schedtune_initialized = true;
 	return 0;
 }
 

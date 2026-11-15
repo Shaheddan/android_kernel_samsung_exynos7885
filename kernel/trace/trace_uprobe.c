@@ -1184,6 +1184,28 @@ static void uretprobe_perf_func(struct trace_uprobe *tu, unsigned long func,
 {
 	__uprobe_perf_func(tu, func, regs, ucb, dsize);
 }
+
+int bpf_get_uprobe_info(const struct perf_event *event, u32 *fd_type,
+			const char **filename, u64 *probe_offset,
+			bool perf_type_tracepoint)
+{
+	const char *pevent = trace_event_name(event->tp_event);
+	const char *group = event->tp_event->class->system;
+	struct trace_uprobe *tu;
+
+	if (perf_type_tracepoint)
+		tu = find_probe_event(pevent, group);
+	else
+		tu = event->tp_event->data;
+	if (!tu)
+		return -EINVAL;
+
+	*fd_type = is_ret_probe(tu) ? BPF_FD_TYPE_URETPROBE
+				    : BPF_FD_TYPE_UPROBE;
+	*filename = tu->filename;
+	*probe_offset = tu->offset;
+	return 0;
+}
 #endif	/* CONFIG_PERF_EVENTS */
 
 static int
@@ -1228,6 +1250,7 @@ static int uprobe_dispatcher(struct uprobe_consumer *con, struct pt_regs *regs)
 	struct uprobe_dispatch_data udd;
 	struct uprobe_cpu_buffer *ucb;
 	int dsize, esize;
+	unsigned int flags;
 	int ret = 0;
 
 
@@ -1248,11 +1271,12 @@ static int uprobe_dispatcher(struct uprobe_consumer *con, struct pt_regs *regs)
 	ucb = uprobe_buffer_get();
 	store_trace_args(esize, &tu->tp, regs, ucb->buf, dsize);
 
-	if (tu->tp.flags & TP_FLAG_TRACE)
+	flags = trace_probe_load_flag(&tu->tp);
+	if (flags & TP_FLAG_TRACE)
 		ret |= uprobe_trace_func(tu, regs, ucb, dsize);
 
 #ifdef CONFIG_PERF_EVENTS
-	if (tu->tp.flags & TP_FLAG_PROFILE)
+	if (flags & TP_FLAG_PROFILE)
 		ret |= uprobe_perf_func(tu, regs, ucb, dsize);
 #endif
 	uprobe_buffer_put(ucb);
@@ -1266,6 +1290,7 @@ static int uretprobe_dispatcher(struct uprobe_consumer *con,
 	struct uprobe_dispatch_data udd;
 	struct uprobe_cpu_buffer *ucb;
 	int dsize, esize;
+	unsigned int flags;
 
 	tu = container_of(con, struct trace_uprobe, consumer);
 
@@ -1283,11 +1308,12 @@ static int uretprobe_dispatcher(struct uprobe_consumer *con,
 	ucb = uprobe_buffer_get();
 	store_trace_args(esize, &tu->tp, regs, ucb->buf, dsize);
 
-	if (tu->tp.flags & TP_FLAG_TRACE)
+	flags = trace_probe_load_flag(&tu->tp);
+	if (flags & TP_FLAG_TRACE)
 		uretprobe_trace_func(tu, func, regs, ucb, dsize);
 
 #ifdef CONFIG_PERF_EVENTS
-	if (tu->tp.flags & TP_FLAG_PROFILE)
+	if (flags & TP_FLAG_PROFILE)
 		uretprobe_perf_func(tu, func, regs, ucb, dsize);
 #endif
 	uprobe_buffer_put(ucb);

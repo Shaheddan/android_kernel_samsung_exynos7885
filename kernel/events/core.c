@@ -4896,9 +4896,7 @@ static int perf_mmap(struct file *file, struct vm_area_struct *vma)
 			goto unlock;
 		}
 
-		atomic_set(&rb->aux_mmap_count, 1);
 		user_extra = nr_pages;
-
 		goto accounting;
 	}
 
@@ -4993,8 +4991,10 @@ accounting:
 	} else {
 		ret = rb_alloc_aux(rb, event, vma->vm_pgoff, nr_pages,
 				   event->attr.aux_watermark, flags);
-		if (!ret)
+		if (!ret) {
+			atomic_set(&rb->aux_mmap_count, 1);
 			rb->aux_mmap_locked = extra;
+		}
 	}
 
 unlock:
@@ -5004,10 +5004,14 @@ unlock:
 
 		atomic_inc(&event->mmap_count);
 	} else if (rb) {
+		/* AUX allocation failed */
 		atomic_dec(&rb->mmap_count);
 	}
 aux_unlock:
 	mutex_unlock(&event->mmap_mutex);
+
+	if (ret)
+		return ret;
 
 	/*
 	 * Since pinned accounting is per vm we cannot allow fork() to copy our
@@ -8168,12 +8172,9 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
 		context = parent_event->overflow_handler_context;
 #if defined(CONFIG_BPF_SYSCALL) && defined(CONFIG_EVENT_TRACING)
 		if (overflow_handler == bpf_overflow_handler) {
-			struct bpf_prog *prog = bpf_prog_inc(parent_event->prog);
+			struct bpf_prog *prog = parent_event->prog;
 
-			if (IS_ERR(prog)) {
-				err = PTR_ERR(prog);
-				goto err_ns;
-			}
+			bpf_prog_inc(prog);
 			event->prog = prog;
 			event->orig_overflow_handler =
 				parent_event->orig_overflow_handler;
@@ -9355,6 +9356,14 @@ struct file *perf_event_get(unsigned int fd)
 	}
 
 	return file;
+}
+
+const struct perf_event *perf_get_event(struct file *file)
+{
+	if (file->f_op != &perf_fops)
+		return ERR_PTR(-EINVAL);
+
+	return file->private_data;
 }
 
 const struct perf_event_attr *perf_event_attrs(struct perf_event *event)

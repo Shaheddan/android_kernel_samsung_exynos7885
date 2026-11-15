@@ -185,6 +185,7 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_HUGETLB	0x00400000	/* Huge TLB Page VM */
 #define VM_ARCH_1	0x01000000	/* Architecture-specific flag */
 #define VM_ARCH_2	0x02000000
+#define VM_WIPEONFORK	0x02000000	/* Wipe VMA contents in child. */
 #define VM_DONTDUMP	0x04000000	/* Do not include in the core dump */
 
 #ifdef CONFIG_MEM_SOFT_DIRTY
@@ -196,7 +197,7 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_MIXEDMAP	0x10000000	/* Can contain "struct page" and pure PFN pages */
 #define VM_HUGEPAGE	0x20000000	/* MADV_HUGEPAGE marked this vma */
 #define VM_NOHUGEPAGE	0x40000000	/* MADV_NOHUGEPAGE marked this vma */
-#define VM_MERGEABLE	0x80000000	/* KSM may merge identical pages */
+#define VM_MERGEABLE	BIT(31)		/* KSM may merge identical pages */
 
 #if defined(CONFIG_X86)
 # define VM_PAT		VM_ARCH_1	/* PAT reserves whole VMA at once (x86) */
@@ -213,8 +214,12 @@ extern unsigned int kobjsize(const void *objp);
 #endif
 
 #if defined(CONFIG_X86)
-/* MPX specific bounds table or bounds directory */
-# define VM_MPX		VM_ARCH_2
+/*
+ * Mainline 4.14 moved VM_MPX to a high VMA bit before VM_WIPEONFORK took
+ * VM_ARCH_2. This tree only builds arm64, so refuse x86 instead of letting
+ * the two flags share a bit.
+ */
+# error "VM_WIPEONFORK shares VM_ARCH_2 with x86 MPX: move VM_MPX first"
 #endif
 
 #ifndef VM_GROWSUP
@@ -467,6 +472,20 @@ static inline void *kvzalloc_node(size_t size, gfp_t flags, int node)
 static inline void *kvzalloc(size_t size, gfp_t flags)
 {
 	return kvmalloc(size, flags | __GFP_ZERO);
+}
+
+/* Backport of upstream 4.12 kvmalloc_array() and 4.18 kvcalloc() */
+static inline void *kvmalloc_array(size_t n, size_t size, gfp_t flags)
+{
+	if (size != 0 && n > SIZE_MAX / size)
+		return NULL;
+
+	return kvmalloc(n * size, flags);
+}
+
+static inline void *kvcalloc(size_t n, size_t size, gfp_t flags)
+{
+	return kvmalloc_array(n, size, flags | __GFP_ZERO);
 }
 
 extern void kvfree(const void *addr);

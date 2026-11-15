@@ -336,7 +336,9 @@ struct ubuf_info {
  * the end of the header data, ie. at skb->end.
  */
 struct skb_shared_info {
-	unsigned char	nr_frags;
+	__u8		__unused;
+	__u8		meta_len;
+	__u8		nr_frags;
 	__u8		tx_flags;
 	unsigned short	gso_size;
 	/* Warning: this field is not always filled in (UFO)! */
@@ -1033,6 +1035,13 @@ static inline __be32 skb_flow_get_ports(const struct sk_buff *skb,
 void skb_flow_dissector_init(struct flow_dissector *flow_dissector,
 			     const struct flow_dissector_key *key,
 			     unsigned int key_count);
+
+struct bpf_prog;
+union bpf_attr;
+int skb_flow_dissector_bpf_prog_attach(const union bpf_attr *attr,
+				       struct bpf_prog *prog);
+
+int skb_flow_dissector_bpf_prog_detach(const union bpf_attr *attr);
 
 bool __skb_flow_dissect(const struct sk_buff *skb,
 			struct flow_dissector *flow_dissector,
@@ -2073,6 +2082,29 @@ static inline void skb_reset_transport_header(struct sk_buff *skb)
 	skb->transport_header = skb->data - skb->head;
 }
 
+/**
+ * skb_reset_transport_header_careful - conditionally reset transport header
+ * @skb: buffer to alter
+ *
+ * Hardened version of skb_reset_transport_header().
+ *
+ * Returns: true if the operation was a success.
+ */
+static inline bool __must_check
+skb_reset_transport_header_careful(struct sk_buff *skb)
+{
+	long offset = skb->data - skb->head;
+
+	if (unlikely(offset != (typeof(skb->transport_header))offset))
+		return false;
+
+	if (unlikely(offset == (typeof(skb->transport_header))~0U))
+		return false;
+
+	skb->transport_header = offset;
+	return true;
+}
+
 static inline void skb_set_transport_header(struct sk_buff *skb,
 					    const int offset)
 {
@@ -2553,7 +2585,13 @@ static inline void *skb_frag_address(const skb_frag_t *frag)
  */
 static inline void *skb_frag_address_safe(const skb_frag_t *frag)
 {
-	void *ptr = page_address(skb_frag_page(frag));
+	struct page *page = skb_frag_page(frag);
+	void *ptr;
+
+	if (!page)
+		return NULL;
+
+	ptr = page_address(page);
 	if (unlikely(!ptr))
 		return NULL;
 
@@ -3144,6 +3182,67 @@ static inline ktime_t net_invalid_timestamp(void)
 {
 	return ktime_set(0, 0);
 }
+
+static inline u8 skb_metadata_len(const struct sk_buff *skb)
+{
+	return skb_shinfo(skb)->meta_len;
+}
+
+static inline void *skb_metadata_end(const struct sk_buff *skb)
+{
+	return skb_mac_header(skb);
+}
+
+static inline bool __skb_metadata_differs(const struct sk_buff *skb_a,
+					  const struct sk_buff *skb_b,
+					  u8 meta_len)
+{
+	const void *a = skb_metadata_end(skb_a);
+	const void *b = skb_metadata_end(skb_b);
+	/* Using more efficient varaiant than plain call to memcmp(). */
+#if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS) && BITS_PER_LONG == 64
+	u64 diffs = 0;
+	switch (meta_len) {
+#define __it(x, op) (x -= sizeof(u##op))
+#define __it_diff(a, b, op) (*(u##op *)__it(a, op)) ^ (*(u##op *)__it(b, op))
+	case 32: diffs |= __it_diff(a, b, 64);
+	case 24: diffs |= __it_diff(a, b, 64);
+	case 16: diffs |= __it_diff(a, b, 64);
+	case  8: diffs |= __it_diff(a, b, 64);
+		break;
+	case 28: diffs |= __it_diff(a, b, 64);
+	case 20: diffs |= __it_diff(a, b, 64);
+	case 12: diffs |= __it_diff(a, b, 64);
+	case  4: diffs |= __it_diff(a, b, 32);
+		break;
+	}
+	return diffs;
+#else
+	return memcmp(a - meta_len, b - meta_len, meta_len);
+#endif
+}
+
+static inline bool skb_metadata_differs(const struct sk_buff *skb_a,
+					const struct sk_buff *skb_b)
+{
+	u8 len_a = skb_metadata_len(skb_a);
+	u8 len_b = skb_metadata_len(skb_b);
+	if (!(len_a | len_b))
+		return false;
+	return len_a != len_b ?
+	       true : __skb_metadata_differs(skb_a, skb_b, len_a);
+}
+
+static inline void skb_metadata_set(struct sk_buff *skb, u8 meta_len)
+{
+	skb_shinfo(skb)->meta_len = meta_len;
+}
+
+static inline void skb_metadata_clear(struct sk_buff *skb)
+{
+	skb_metadata_set(skb, 0);
+}
+
 
 struct sk_buff *skb_clone_sk(struct sk_buff *skb);
 
