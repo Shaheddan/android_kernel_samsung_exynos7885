@@ -1224,7 +1224,9 @@ usi_mode = "hsi2c0" or "hsi2c1" or "spi" or "uart"
 		compatible = "siliconmitus,sma1301";
 		#sound-dai-cells = <1>;
 		reg = <0x1e>;
-		init-vol = <0x32>;
+		/* Loudest level the driver lets userspace set: 0x2a = Speaker Volume 125
+		 * (+4 dB over Samsung's 0x32), used with the amp limiter on. */
+		init-vol = <0x2a>;
 		/* SRC-bypass; */
 	};
 };
