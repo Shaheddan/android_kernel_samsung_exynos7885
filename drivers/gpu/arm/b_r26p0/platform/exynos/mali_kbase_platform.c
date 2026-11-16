@@ -289,6 +289,7 @@ static int gpu_dvfs_update_config_data_from_dt(struct kbase_device *kbdev)
 	gpu_update_config_data_int(np, "gpu_pmqos_cpu_cluster_num", &platform->gpu_pmqos_cpu_cluster_num);
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
 	gpu_update_config_data_int(np, "eureka_gpu_max_clock", &platform->eureka_gpu_max_clock);
+	gpu_update_config_data_int(np, "eureka_gpu_stock_clock", &platform->eureka_gpu_stock_clock);
 	gpu_update_config_data_int_array(np, "eureka_gpu_temp_throttling", of_data_int_array, 6);
 	platform->eureka_gpu_temp_throttling_0 = of_data_int_array[0];
 	platform->eureka_gpu_temp_throttling_1 = of_data_int_array[1];

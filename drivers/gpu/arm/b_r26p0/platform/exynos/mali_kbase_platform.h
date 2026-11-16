@@ -243,6 +243,8 @@ struct exynos_context {
 
 	/* eureka custom nodes*/
 	int eureka_gpu_max_clock;
+	/* Samsung's top clock for the phone; the GPU starts capped here (0: no cap) */
+	int eureka_gpu_stock_clock;
 	int eureka_gpu_temp_throttling;
 	int eureka_gpu_temp_throttling_0;
 	int eureka_gpu_temp_throttling_1;
