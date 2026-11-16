@@ -774,9 +774,14 @@
 			};
 
 			cpufreq {
+				/*
+				 * max-freq is Samsung's limit for the Exynos 7884B and where the
+				 * cores boot and stay; eureka_max-freq is the top of the table,
+				 * reached only by the overclock performance profiles.
+				 */
 				domain@0 {
 					max-freq = <1352000>;
-					eureka_max-freq = <1352000>;
+					eureka_max-freq = <1690000>;
 
 					dm-constraints {
 						mif-perf {
@@ -797,7 +802,7 @@
 				};
 				domain@1 {
 					max-freq = <1560000>;
-					eureka_max-freq = <1560000>;
+					eureka_max-freq = <2080000>;
 
 					dm-constraints {
 						mif-perf {
