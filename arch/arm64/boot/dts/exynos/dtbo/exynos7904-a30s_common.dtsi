@@ -783,10 +783,20 @@
 			};
 
 			cpufreq {
+				/*
+				 * max-freq is Samsung's limit for this phone's Exynos 7904 and
+				 * where the cores boot and stay; eureka_max-freq is the top of
+				 * the table, reached only by the overclock performance profiles.
+				 * The little cores stop at 1690 MHz: the ECT has no voltages of
+				 * their own for 1794 MHz and up.
+				 */
+				domain@0 {
+					max-freq = <1586000>;
+					eureka_max-freq = <1690000>;
+				};
 				domain@1 {
-					/* Samsung's limit for this phone's Exynos 7904 */
 					max-freq = <1768000>;
-					eureka_max-freq = <1768000>;
+					eureka_max-freq = <2080000>;
 				};
 			};
 			
