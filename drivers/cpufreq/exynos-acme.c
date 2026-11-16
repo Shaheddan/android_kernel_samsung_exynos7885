@@ -278,6 +278,14 @@ static int exynos_cpufreq_driver_init(struct cpufreq_policy *policy)
 		return ret;
 	}
 
+	/*
+	 * Start below the top of the table: the cpufreq core copies this into
+	 * user_policy.max, i.e. scaling_max_freq, and keeps the value across
+	 * hotplug. Writing a higher scaling_max_freq opens the extra levels.
+	 */
+	if (domain->stock_max_freq && domain->stock_max_freq < policy->max)
+		policy->max = domain->stock_max_freq;
+
 	policy->cur = get_freq(domain);
 	policy->cpuinfo.transition_latency = TRANSITION_LATENCY;
 	cpumask_copy(policy->cpus, &domain->cpus);
@@ -892,7 +900,7 @@ static __init void set_boot_qos(struct exynos_cpufreq_domain *domain,
 	 * booting pm_qos is selected to smaller one
 	 * between max frequency of domain and the value defined in device tree.
 	 */
-	boot_qos = domain->max_freq;
+	boot_qos = domain->stock_max_freq;
 	if (!of_property_read_u32(dn, "pm_qos-booting", &val)) {
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
 		if (!of_property_read_u32(dn, "eureka_pm_qos-booting", &ekval))
@@ -1181,6 +1189,7 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 #ifndef CONFIG_EXYNOS_HOTPLUG_GOVERNOR
 	if (!of_property_read_u32(dn, "max-freq", &val)) {
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+		domain->stock_max_freq = val;
 		if (!of_property_read_u32(dn, "eureka_max-freq", &ekval))
 			domain->max_freq = ekval;
 #else
@@ -1206,18 +1215,22 @@ static __init int init_domain(struct exynos_cpufreq_domain *domain,
 		domain->max_freq = 1690000;
  	}
 
+	/* No max-freq in the DT (or it is above the table): no separate stock limit. */
+	if (!domain->stock_max_freq || domain->stock_max_freq > domain->max_freq)
+		domain->stock_max_freq = domain->max_freq;
+
 	domain->boot_freq = cal_dfs_get_boot_freq(domain->cal_id);
 	domain->resume_freq = cal_dfs_get_resume_freq(domain->cal_id);
 	// Allow phone to boot with max frequency and increase resume_freq by 1 level
 #ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
 	if (domain->id == 0)
 	{
-		domain->boot_freq = domain->max_freq;
+		domain->boot_freq = domain->stock_max_freq;
 		domain->resume_freq = 1144000;
 	}
 	else if (domain->id == 1)
 	{
-		domain->boot_freq = domain->max_freq;
+		domain->boot_freq = domain->stock_max_freq;
 		domain->resume_freq = 1560000;
 	}
 #else
