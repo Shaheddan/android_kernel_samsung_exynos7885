@@ -42,6 +42,12 @@ struct exynos_cpufreq_domain {
 	struct cpufreq_frequency_table	*freq_table;
 
 	unsigned int			max_freq;
+	/*
+	 * Samsung's limit for the phone (DT max-freq). The domain boots and
+	 * starts with this as its policy maximum; levels above it, up to
+	 * max_freq, are only used once userspace raises scaling_max_freq.
+	 */
+	unsigned int			stock_max_freq;
 	unsigned int			min_freq;
 	unsigned int			boot_freq;
 	unsigned int			resume_freq;
