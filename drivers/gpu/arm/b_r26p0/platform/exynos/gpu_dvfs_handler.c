@@ -57,6 +57,9 @@ int kbase_platform_dvfs_event(struct kbase_device *kbdev, u32 utilisation)
 int gpu_dvfs_handler_init(struct kbase_device *kbdev)
 {
 	struct exynos_context *platform = (struct exynos_context *) kbdev->platform_context;
+#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+	static bool stock_lock_done;
+#endif
 
 	DVFS_ASSERT(platform);
 
@@ -67,6 +70,24 @@ int gpu_dvfs_handler_init(struct kbase_device *kbdev)
 #ifdef CONFIG_MALI_PM_QOS
 	gpu_pm_qos_command(platform, GPU_CONTROL_PM_QOS_INIT);
 #endif /* CONFIG_MALI_PM_QOS */
+
+#ifdef CONFIG_EUREKA_CUSTOM_DT_NODES
+	/*
+	 * gpu_max_clock is the top of the table; the clocks above Samsung's are
+	 * only for userspace to ask for. Start under the same max lock that
+	 * /sys/kernel/gpu/gpu_max_clock sets, so writing a higher clock there
+	 * (or the top clock, which unlocks) is all it takes to lift it.
+	 * Only at boot: this also runs each time DVFS is switched back on, and
+	 * must not drop a limit userspace has raised since.
+	 */
+	if (!stock_lock_done && platform->eureka_gpu_stock_clock > 0 &&
+	    platform->eureka_gpu_stock_clock < platform->gpu_max_clock &&
+	    gpu_dvfs_get_level(platform->eureka_gpu_stock_clock) >= 0) {
+		platform->user_max_lock_input = platform->eureka_gpu_stock_clock;
+		gpu_dvfs_clock_lock(GPU_DVFS_MAX_LOCK, SYSFS_LOCK, platform->eureka_gpu_stock_clock);
+	}
+	stock_lock_done = true;
+#endif
 
 	gpu_set_target_clk_vol(platform->table[platform->step].clock, false);
 
