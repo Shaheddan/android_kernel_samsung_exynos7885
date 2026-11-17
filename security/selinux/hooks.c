@@ -2276,8 +2276,13 @@ static int check_nnp_nosuid(const struct linux_binprm *bprm,
 		return 0; /* No change in credentials */
 
 
+	/*
+	 * KernelSU-Next runs ksud in its own "ksu" domain. /data is nosuid and 4.4
+	 * has no nosuid_transition permission, so let init -> u:r:ksu:s0 through here,
+	 * or init cannot start ksud at boot and modules never get mounted.
+	 */
 	if(!ksu_sid){
-		security_secctx_to_secid("u:r:su:s0", strlen("u:r:su:s0"), &ksu_sid);
+		security_secctx_to_secid("u:r:ksu:s0", strlen("u:r:ksu:s0"), &ksu_sid);
 	}
 	error = security_secid_to_secctx(old_tsec->sid, &secdata, &seclen);
 	if (!error) {
