@@ -1210,11 +1210,66 @@ static const struct file_operations pagetypeinfo_file_ops = {
 	.release	= seq_release,
 };
 
+/*
+ * Counters that kernels with node-based LRUs (4.8+) print once per node
+ * in a "per-node stats" block. Android's lmkd reads nr_inactive_file and
+ * nr_active_file from that block and refuses the whole file without it
+ * ("/proc/zoneinfo parse error"), so print the same block here, summed
+ * over the node's zones.
+ */
+static const enum zone_stat_item zoneinfo_node_items[] = {
+	NR_INACTIVE_ANON,
+	NR_ACTIVE_ANON,
+	NR_INACTIVE_FILE,
+	NR_ACTIVE_FILE,
+	NR_UNEVICTABLE,
+	NR_ISOLATED_ANON,
+	NR_ISOLATED_FILE,
+	WORKINGSET_REFAULT,
+	WORKINGSET_ACTIVATE,
+	WORKINGSET_NODERECLAIM,
+	NR_ANON_PAGES,
+	NR_FILE_MAPPED,
+	NR_FILE_PAGES,
+	NR_FILE_DIRTY,
+	NR_WRITEBACK,
+	NR_WRITEBACK_TEMP,
+	NR_SHMEM,
+	NR_UNSTABLE_NFS,
+	NR_VMSCAN_WRITE,
+	NR_VMSCAN_IMMEDIATE,
+	NR_DIRTIED,
+	NR_WRITTEN,
+};
+
+static bool is_zone_first_populated(pg_data_t *pgdat, struct zone *zone)
+{
+	int zid;
+
+	for (zid = 0; zid < MAX_NR_ZONES; zid++) {
+		struct zone *compare = &pgdat->node_zones[zid];
+
+		if (populated_zone(compare))
+			return zone == compare;
+	}
+
+	return false;
+}
+
 static void zoneinfo_show_print(struct seq_file *m, pg_data_t *pgdat,
 							struct zone *zone)
 {
 	int i;
 	seq_printf(m, "Node %d, zone %8s", pgdat->node_id, zone->name);
+	if (is_zone_first_populated(pgdat, zone)) {
+		seq_printf(m, "\n  per-node stats");
+		for (i = 0; i < ARRAY_SIZE(zoneinfo_node_items); i++) {
+			enum zone_stat_item item = zoneinfo_node_items[i];
+
+			seq_printf(m, "\n      %-12s %lu", vmstat_text[item],
+				   node_page_state(pgdat->node_id, item));
+		}
+	}
 	seq_printf(m,
 		   "\n  pages free     %lu"
 		   "\n        min      %lu"
@@ -1309,18 +1364,67 @@ enum writeback_stat_item {
 	NR_VM_WRITEBACK_STAT_ITEMS,
 };
 
+#ifdef CONFIG_VM_EVENT_COUNTERS
+/*
+ * Reclaim counters summed over all zones, under the names 4.8+ kernels
+ * use. Android's lmkd tells kswapd and direct reclaim apart by watching
+ * pgscan_kswapd, pgscan_direct and pgrefill; here those only exist per
+ * zone (pgscan_kswapd_dma, ...), so it would never see any reclaim.
+ * They go after the regular counters, which keep their order.
+ */
+static const char * const vmstat_totals_text[] = {
+	"pgrefill",
+	"pgsteal_kswapd",
+	"pgsteal_direct",
+	"pgscan_kswapd",
+	"pgscan_direct",
+};
+#define NR_VMSTAT_TOTALS ARRAY_SIZE(vmstat_totals_text)
+
+/* A FOR_ALL_ZONES() event runs from first##_NORMAL - ZONE_NORMAL to last */
+static unsigned long vmstat_zone_total(const unsigned long *ev,
+				       int first, int last)
+{
+	unsigned long sum = 0;
+	int i;
+
+	for (i = first; i <= last; i++)
+		sum += ev[i];
+	return sum;
+}
+
+static void vmstat_fill_totals(const unsigned long *ev, unsigned long *t)
+{
+	t[0] = vmstat_zone_total(ev, PGREFILL_NORMAL - ZONE_NORMAL,
+				 PGREFILL_MOVABLE);
+	t[1] = vmstat_zone_total(ev, PGSTEAL_KSWAPD_NORMAL - ZONE_NORMAL,
+				 PGSTEAL_KSWAPD_MOVABLE);
+	t[2] = vmstat_zone_total(ev, PGSTEAL_DIRECT_NORMAL - ZONE_NORMAL,
+				 PGSTEAL_DIRECT_MOVABLE);
+	t[3] = vmstat_zone_total(ev, PGSCAN_KSWAPD_NORMAL - ZONE_NORMAL,
+				 PGSCAN_KSWAPD_MOVABLE);
+	t[4] = vmstat_zone_total(ev, PGSCAN_DIRECT_NORMAL - ZONE_NORMAL,
+				 PGSCAN_DIRECT_MOVABLE);
+}
+#else
+#define NR_VMSTAT_TOTALS 0
+#endif
+
+#define NR_VMSTAT_LINES (ARRAY_SIZE(vmstat_text) + NR_VMSTAT_TOTALS)
+
 static void *vmstat_start(struct seq_file *m, loff_t *pos)
 {
 	unsigned long *v;
 	int i, stat_items_size;
 
-	if (*pos >= ARRAY_SIZE(vmstat_text))
+	if (*pos >= NR_VMSTAT_LINES)
 		return NULL;
 	stat_items_size = NR_VM_ZONE_STAT_ITEMS * sizeof(unsigned long) +
 			  NR_VM_WRITEBACK_STAT_ITEMS * sizeof(unsigned long);
 
 #ifdef CONFIG_VM_EVENT_COUNTERS
 	stat_items_size += sizeof(struct vm_event_state);
+	stat_items_size += NR_VMSTAT_TOTALS * sizeof(unsigned long);
 #endif
 
 	v = kmalloc(stat_items_size, GFP_KERNEL);
@@ -1339,6 +1443,7 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 	all_vm_events(v);
 	v[PGPGIN] /= 2;		/* sectors -> kbytes */
 	v[PGPGOUT] /= 2;
+	vmstat_fill_totals(v, v + NR_VM_EVENT_ITEMS);
 #endif
 	return (unsigned long *)m->private + *pos;
 }
@@ -1346,7 +1451,7 @@ static void *vmstat_start(struct seq_file *m, loff_t *pos)
 static void *vmstat_next(struct seq_file *m, void *arg, loff_t *pos)
 {
 	(*pos)++;
-	if (*pos >= ARRAY_SIZE(vmstat_text))
+	if (*pos >= NR_VMSTAT_LINES)
 		return NULL;
 	return (unsigned long *)m->private + *pos;
 }
@@ -1356,7 +1461,12 @@ static int vmstat_show(struct seq_file *m, void *arg)
 	unsigned long *l = arg;
 	unsigned long off = l - (unsigned long *)m->private;
 
-	seq_puts(m, vmstat_text[off]);
+#ifdef CONFIG_VM_EVENT_COUNTERS
+	if (off >= ARRAY_SIZE(vmstat_text))
+		seq_puts(m, vmstat_totals_text[off - ARRAY_SIZE(vmstat_text)]);
+	else
+#endif
+		seq_puts(m, vmstat_text[off]);
 	seq_put_decimal_ull(m, " ", *l);
 	seq_putc(m, '\n');
 	return 0;
