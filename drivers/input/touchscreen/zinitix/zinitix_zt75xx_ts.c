@@ -2471,6 +2471,7 @@ static void location_detect(struct bt532_ts_info *info, char *loc, int x, int y)
 #define DELAY 150000000 // In nanoseconds (1 s = 1,000,000,000 ns)
 #define DELAY_MAX 500000000
 #include <linux/time.h>
+#include <linux/ktime.h>
 
 static irqreturn_t bt532_touch_work(int irq, void *data)
 {
@@ -2483,8 +2484,7 @@ static irqreturn_t bt532_touch_work(int irq, void *data)
 	u8 prev_sub_status;
 	u32 x, y, w, maxX, maxY;
 	u32 z;
-	static long current_time, before_time;
-	struct timespec ts;
+	static u64 before_time;
 	u8 palm = 0;
 #ifdef SUPPORTED_PALM_TOUCH
 	u32	minor_w;
@@ -2625,22 +2625,33 @@ static irqreturn_t bt532_touch_work(int irq, void *data)
 							info->touch_info.coord[i].y - info->pressed_y[i],
 							info->move_count[i], __LINE__);
 #endif
-				getnstimeofday(&ts);
-				current_time = ts.tv_nsec;
-				if (info->aot_enable) {
-					info->scrub_id = SPONGE_EVENT_TYPE_AOD_DOUBLETAB;	
+				/*
+				 * Only count taps as a wake gesture while the panel is off.
+				 * With the screen on, the double tap that puts the phone to
+				 * sleep from the lock screen ended up here too: its second
+				 * release sent KEY_WAKEUP and woke the phone right back up.
+				 * Use a monotonic clock as well: tv_nsec wraps every second,
+				 * which also turned some single taps into "double taps".
+				 */
+				if (info->aot_enable && info->sleep_mode) {
+					u64 now = ktime_get_ns();
+					u64 diff = now - before_time;
+
+					info->scrub_id = SPONGE_EVENT_TYPE_AOD_DOUBLETAB;
 					input_info(true, &client->dev, "[DT2W] Tab detect\n");
-					long diff;
-					diff = current_time - before_time;
-					if(DELAY <= diff && diff <= DELAY_MAX){
+					if (before_time && DELAY <= diff && diff <= DELAY_MAX) {
 						input_info(true, &client->dev, "[DT2W] Double tap detect\n");
 						input_report_key(info->input_dev, KEY_WAKEUP, 1);
-						input_sync(info->input_dev);	
+						input_sync(info->input_dev);
 						input_report_key(info->input_dev, KEY_WAKEUP, 0);
 						input_sync(info->input_dev);
+						before_time = 0;
+					} else {
+						before_time = now;
 					}
+				} else {
+					before_time = 0;
 				}
-				before_time = current_time;
 				if(info->finger_cnt1 > 0)
 					info->finger_cnt1--;
 				if (info->finger_cnt1 == 0) {
